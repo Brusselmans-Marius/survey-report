@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+.DS_Store
+survey_answers.xlsx
+.streamlit/secrets.toml
