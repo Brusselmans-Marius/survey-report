@@ -13,6 +13,7 @@ from __future__ import annotations
 import pandas as pd
 
 import charts
+from metadata import EUROPEAN_COUNTRIES
 from variables import Variable, list_questions, read_variable
 
 # Last real survey question. Everything after this column in a LimeSurvey
@@ -22,8 +23,16 @@ from variables import Variable, list_questions, read_variable
 ANCHOR_QUESTION = "G10Q01"
 
 
-def prepare_responses(df: pd.DataFrame, only_full_responses: bool) -> pd.DataFrame:
-    """Sanity-checks the upload and applies the "full responses only" filter."""
+def prepare_responses(
+    df: pd.DataFrame,
+    only_full_responses: bool,
+    only_european: bool = False,
+    metadata: pd.DataFrame | None = None,
+    countries: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    """Sanity-checks the upload and applies the sidebar filters: "full
+    responses only" and "European respondents only" (the latter needs the
+    metadata and countries tables to find and translate the country)."""
     if ANCHOR_QUESTION not in df.columns:
         raise ValueError(
             "This doesn't look like a survey export - couldn't find the "
@@ -33,9 +42,20 @@ def prepare_responses(df: pd.DataFrame, only_full_responses: bool) -> pd.DataFra
         if "submitdate" not in df.columns:
             raise ValueError("Can't filter to full responses - no 'submitdate' column in this file.")
         df = df[df["submitdate"].notna()]
+    if only_european:
+        df = df[respondent_countries(df, metadata, countries).isin(EUROPEAN_COUNTRIES)]
     if df.empty:
         raise ValueError("No responses left after filtering.")
     return df
+
+
+def respondent_countries(df: pd.DataFrame, metadata: pd.DataFrame, countries: pd.DataFrame) -> pd.Series:
+    """Each respondent's country name (missing if they didn't answer), from
+    the codes file's Country-type question."""
+    country_qs = [q for q in list_questions(metadata, df.columns) if q["kind"] == "Country"]
+    if not country_qs:
+        raise ValueError("Can't filter by country - no country question found in this file.")
+    return read_variable(df, country_qs[0], countries).values
 
 
 def _discrete_exclusive(var: Variable) -> dict:

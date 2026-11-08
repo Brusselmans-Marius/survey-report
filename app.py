@@ -10,8 +10,9 @@ Two tabs:
 - Full report: one chart/table per question.
 - Explore: one question at a time, optionally grouped by a second question.
 
-A sidebar toggle switches every label between the compact (short) texts and
-the extended (full question / answer) texts.
+Sidebar filters ("Full responses only", "European respondents only") apply
+immediately to both tabs. A sidebar toggle switches every label between the
+compact (short) texts and the extended (full question / answer) texts.
 """
 import io
 import re
@@ -28,17 +29,28 @@ from variables import list_questions
 st.set_page_config(page_title="Survey results", layout="wide")
 st.title("Attitudes towards anesthesia for pregnant women: a survey [results]")
 
-if "responses" not in st.session_state:
-    st.session_state.responses = None
-    # Full report per text view ("compact"/"extended"), built on first use
-    # and reused until a new file is loaded.
+if "raw_responses" not in st.session_state:
+    # The uploaded file as read; the sidebar filters are applied on top of
+    # it on every run, so changing a filter needs no new upload.
+    st.session_state.raw_responses = None
+    # Full report per (text view, filters), built on first use and reused
+    # until a new file is loaded.
     st.session_state.reports = {}
 
 with st.sidebar:
     uploaded_file = st.file_uploader("Drag the survey responses .xlsx here", type=["xlsx"])
-    full_only = st.checkbox("Full responses only", value=False)
     run_clicked = st.button("Get results", type="primary")
     status = st.empty()
+    st.divider()
+    full_only = st.checkbox("Full responses only", value=False)
+    europe_only = st.toggle(
+        "European respondents only",
+        value=False,
+        help="Only respondents practising in Europe, including Turkey, Russia, "
+             "Cyprus, the Caucasus and Kazakhstan. Respondents who didn't "
+             "answer the country question are left out.",
+    )
+    filter_status = st.empty()
     st.divider()
     extended = st.toggle(
         "Full question & answer text",
@@ -55,22 +67,29 @@ if run_clicked:
     if uploaded_file is None:
         status.warning("Please upload a survey responses file first.")
     else:
-        with st.spinner("Building report..."):
-            try:
-                df = pd.read_excel(uploaded_file, sheet_name=0)
-            except Exception:
-                st.session_state.responses = None
-                st.session_state.reports = {}
-                status.error("Couldn't read that file - please upload a valid .xlsx survey export.")
-            else:
-                try:
-                    st.session_state.responses = prepare_responses(df, full_only)
-                    st.session_state.reports = {}
-                    status.empty()
-                except Exception as exc:
-                    st.session_state.responses = None
-                    st.session_state.reports = {}
-                    status.error(f"Error: {exc}")
+        try:
+            df = pd.read_excel(uploaded_file, sheet_name=0)
+            prepare_responses(df, only_full_responses=False)  # is it a survey export?
+        except Exception as exc:
+            st.session_state.raw_responses = None
+            status.error(
+                f"Error: {exc}" if isinstance(exc, ValueError)
+                else "Couldn't read that file - please upload a valid .xlsx survey export."
+            )
+        else:
+            st.session_state.raw_responses = df
+        st.session_state.reports = {}
+
+# Apply the sidebar filters to the loaded file.
+responses = None
+raw = st.session_state.raw_responses
+if raw is not None:
+    try:
+        responses = prepare_responses(raw, full_only, europe_only, metadata, countries)
+    except ValueError as exc:
+        filter_status.warning(str(exc))
+    else:
+        filter_status.caption(f"Showing {len(responses)} of {len(raw)} responses.")
 
 def figure_png(fig) -> bytes:
     """Renders a figure the way st.pyplot does (tight crop, 200 dpi)."""
@@ -88,8 +107,8 @@ def heading(title: str) -> None:
         st.subheader(title)
 
 
-responses = st.session_state.responses
-if responses is not None and view not in st.session_state.reports:
+report_key = (view, full_only, europe_only)
+if responses is not None and report_key not in st.session_state.reports:
     with st.spinner("Building report..."):
         items = build_report_items(responses, metadata, countries)
         # Render each chart to an image once, here, instead of on every
@@ -97,7 +116,7 @@ if responses is not None and view not in st.session_state.reports:
         for item in items:
             if item["type"] == "plot":
                 item["png"] = figure_png(item.pop("obj"))
-        st.session_state.reports[view] = items
+        st.session_state.reports[report_key] = items
 
 
 def show_figure_fixed(fig) -> None:
@@ -155,16 +174,23 @@ def _show_item_body(item: dict, fixed_size: bool) -> None:
             st.dataframe(item["data"], hide_index=True, width="stretch")
 
 
+def show_no_data_message() -> None:
+    if st.session_state.raw_responses is None:
+        st.info("Upload a survey responses file and click **Get results**.")
+    else:
+        st.info("No responses match the current filters in the sidebar.")
+
+
 tab_report, tab_explore = st.tabs(["Full report", "Explore"])
 
 with tab_report:
-    items = st.session_state.reports.get(view) if responses is not None else None
+    items = st.session_state.reports.get(report_key) if responses is not None else None
     if items:
         for item in items:
             heading(item["title"])
             show_item(item)
     else:
-        st.info("Upload a survey responses file and click **Get results**.")
+        show_no_data_message()
 
 
 # ---- Explore tab ---------------------------------------------------------
@@ -258,6 +284,6 @@ def explore_tab(responses, metadata, countries) -> None:
 
 with tab_explore:
     if responses is None:
-        st.info("Upload a survey responses file and click **Get results**.")
+        show_no_data_message()
     else:
         explore_tab(responses, metadata, countries)
