@@ -45,6 +45,24 @@ CATEGORY_NAMES = {
 }
 
 
+# Countries counted as "European" by the sidebar filter, spelled exactly as
+# in the codes files' Countries sheet. Wide definition: all of Europe plus
+# the transcontinental countries (Turkey, Russia, Cyprus, the Caucasus and
+# Kazakhstan). Edit this list to change what the filter includes.
+EUROPEAN_COUNTRIES = frozenset({
+    "Albania", "Andorra", "Armenia", "Austria", "Azerbaijan", "Belarus",
+    "Belgium", "Bosnia Herzegovina", "Bulgaria", "Croatia", "Cyprus",
+    "Czech Republic", "Denmark", "Estonia", "Finland", "France", "Georgia",
+    "Germany", "Greece", "Hungary", "Iceland", "Ireland {Republic}", "Italy",
+    "Kazakhstan", "Kosovo", "Latvia", "Liechtenstein", "Lithuania",
+    "Luxembourg", "Macedonia", "Malta", "Moldova", "Monaco", "Montenegro",
+    "Netherlands", "Norway", "Poland", "Portugal", "Romania",
+    "Russian Federation", "San Marino", "Serbia", "Slovakia", "Slovenia",
+    "Spain", "Sweden", "Switzerland", "Turkey", "Ukraine", "United Kingdom",
+    "Vatican City",
+})
+
+
 @st.cache_data
 def load_metadata(view: str = "compact") -> tuple[pd.DataFrame, pd.DataFrame]:
     """Returns (metadata, countries) for the "compact" or "extended" view.
