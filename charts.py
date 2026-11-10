@@ -350,3 +350,58 @@ def stacked_100_chart(shares: pd.DataFrame, colors: list[str]) -> plt.Figure:
     fig.tight_layout()
     _group_legend(fig, ax, answers, colors)
     return fig
+
+
+# ---- Country-wise figure builder -------------------------------------------
+
+COUNTRY_ROW_HEIGHT = 0.36  # inches per bar at height scale 100%
+
+
+def country_stacked_chart(
+    shares: pd.DataFrame,
+    colors: list[str],
+    kinds: list[str],
+    height_scale: float = 1.0,
+    xlabel: str = "Share of respondents",
+) -> plt.Figure:
+    """One 100% bar per country or country group, first row on top.
+    shares: index = row labels, columns = answers (same order for every
+    row), values = shares (0-1). kinds: "country", "group" (drawn with a
+    bold label) or "pooled" (muted italic label), one per row. The figure
+    grows with the number of rows, times `height_scale`."""
+    rows = list(shares.index)
+    answers = list(shares.columns)
+    k = len(rows)
+    names = [wrap(r) for r in rows]
+    row_h = max(COUNTRY_ROW_HEIGHT * height_scale, _max_lines(names) * LINE_HEIGHT + 0.06)
+    fig, ax = plt.subplots(figsize=(7.0, row_h * k + 0.9))
+    ys = [k - 1 - j for j in range(k)]
+    left = np.zeros(k)
+    for answer, color in zip(answers, colors):
+        vals = shares[answer].to_numpy(dtype=float)
+        ax.barh(ys, vals, left=left, height=0.7, color=color, edgecolor=SURFACE, linewidth=2)
+        # Percent labels only where the segment and the row are big enough.
+        if row_h >= 0.22:
+            for y, x0, v in zip(ys, left, vals):
+                if v >= 0.08:
+                    ax.text(x0 + v / 2, y, f"{v * 100:.0f}%", ha="center", va="center",
+                            color=INK_PRIMARY, fontsize=8)
+        left = left + vals
+    ax.set_yticks(ys)
+    ax.set_yticklabels(names)
+    ax.set_ylim(-0.6, k - 0.4)
+    ax.set_xlim(0, 1)
+    ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"{v * 100:.0f}%"))
+    ax.set_xlabel(xlabel, color=INK_MUTED, fontsize=9)
+    _style_axes(ax)
+    for tick, kind in zip(ax.get_yticklabels(), kinds):
+        if kind == "group":
+            tick.set_fontweight("bold")
+        if kind == "pooled":
+            tick.set_fontstyle("italic")
+            tick.set_color(INK_MUTED)
+        else:
+            tick.set_color(INK_PRIMARY)
+    fig.tight_layout()
+    _group_legend(fig, ax, answers, colors)
+    return fig
