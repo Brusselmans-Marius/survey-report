@@ -6,9 +6,11 @@ or sent anywhere else. The question/answer translation tables
 (lisasurvey_codes.xlsx and lisasurvey_codes_extended.xlsx) ship with the app
 itself; see metadata.py for how to update them.
 
-Two tabs:
+Three tabs:
 - Full report: one chart/table per question.
 - Explore: one question at a time, optionally grouped by a second question.
+- Country-wise figure builder: one question, one 100% bar per country, with
+  user-defined country groups.
 
 Sidebar filters ("Full responses only", "European respondents only") apply
 immediately to both tabs. A sidebar toggle switches every label between the
@@ -21,9 +23,12 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import streamlit as st
 
+from countrywise import (
+    RANKING_NOTE, SORT_ALPHABETICAL, SORT_BY_SIZE, build_country_item, country_options,
+)
 from explore import build_grouped_item, group_by_options, supports_scale_to_100
 from metadata import load_metadata
-from report import build_report_items, prepare_responses
+from report import build_report_items, prepare_responses, respondent_countries
 from variables import list_questions
 
 st.set_page_config(page_title="Survey results", layout="wide")
@@ -36,6 +41,10 @@ if "raw_responses" not in st.session_state:
     # Full report per (text view, filters), built on first use and reused
     # until a new file is loaded.
     st.session_state.reports = {}
+if "cw_groups" not in st.session_state:
+    # Country groups of the Country-wise tab: [{"name", "countries"}, ...].
+    # Kept for the whole browser session, whatever the filters or file.
+    st.session_state.cw_groups = []
 
 with st.sidebar:
     uploaded_file = st.file_uploader("Drag the survey responses .xlsx here", type=["xlsx"])
@@ -181,7 +190,9 @@ def show_no_data_message() -> None:
         st.info("No responses match the current filters in the sidebar.")
 
 
-tab_report, tab_explore = st.tabs(["Full report", "Explore"])
+tab_report, tab_explore, tab_country = st.tabs(
+    ["Full report", "Explore", "Country-wise figure builder"]
+)
 
 with tab_report:
     items = st.session_state.reports.get(report_key) if responses is not None else None
@@ -287,3 +298,143 @@ with tab_explore:
         show_no_data_message()
     else:
         explore_tab(responses, metadata, countries)
+
+
+# ---- Country-wise figure builder tab ---------------------------------------
+# Also a fragment. Country groups live in st.session_state.cw_groups and are
+# never changed by the sidebar filters: the filtered responses are simply
+# counted into whichever groups exist.
+
+def _add_group(all_countries: list[str]):
+    ss = st.session_state
+    name = (ss.get("cw_new_name") or "").strip()
+    members = list(ss.get("cw_new_members") or [])
+    taken = {g["name"].casefold() for g in ss.cw_groups} | {c.casefold() for c in all_countries}
+    if not name:
+        ss.cw_error = "Give the group a name."
+    elif name.casefold() in taken:
+        ss.cw_error = f"\"{name}\" is already used by a group or a country - pick another name."
+    elif len(members) < 2:
+        ss.cw_error = "Pick at least two countries."
+    else:
+        ss.cw_groups = ss.cw_groups + [{"name": name, "countries": sorted(members)}]
+        ss.cw_new_name, ss.cw_new_members, ss.cw_making = "", [], False
+        ss.cw_error = None
+
+
+def _remove_group(name: str):
+    def callback():
+        st.session_state.cw_groups = [g for g in st.session_state.cw_groups if g["name"] != name]
+    return callback
+
+
+def _group_manager(all_countries: list[str], present: set[str]) -> None:
+    """The "country groups" section below the plot: active groups with a
+    remove button each, and the form to make a new one."""
+    groups = st.session_state.cw_groups
+    st.markdown("**Country groups**")
+    if not groups:
+        st.caption("No groups yet - every country is its own bar.")
+    for group in groups:
+        members = [
+            c if c in present else f"{c} *(filtered out)*" for c in group["countries"]
+        ]
+        with st.container(border=True):
+            col_text, col_x = st.columns([12, 1], vertical_alignment="center")
+            note = "" if any(c in present for c in group["countries"]) else (
+                "  \n:gray[No respondents under the current filters - not shown in the plot.]"
+            )
+            col_text.markdown(f"**{_escape_markdown(group['name'])}**: {', '.join(members)}{note}")
+            col_x.button("✕", key=f"cw_remove_{group['name']}", help="Remove this group",
+                         on_click=_remove_group(group["name"]))
+
+    if st.toggle("Make new grouping", key="cw_making"):
+        grouped = {c for g in groups for c in g["countries"]}
+        free = [c for c in all_countries if c not in grouped]
+        with st.container(border=True):
+            st.multiselect(
+                "Countries in the group", free, key="cw_new_members",
+                placeholder="Choose countries",
+                help="Countries already in a group aren't listed; remove that group first.",
+            )
+            st.text_input("Group name", key="cw_new_name", placeholder="e.g. Nordic countries")
+            st.button("Confirm group", type="primary", on_click=_add_group, args=(all_countries,))
+            if st.session_state.get("cw_error"):
+                st.warning(st.session_state.cw_error)
+
+
+def _download_buttons(fig, name: str) -> None:
+    """Download the chart as a vector PDF or a 300 dpi PNG (the on-screen
+    image is lower resolution to keep the page fast)."""
+    pdf, png = io.BytesIO(), io.BytesIO()
+    fig.savefig(pdf, format="pdf", bbox_inches="tight")
+    fig.savefig(png, format="png", dpi=300, bbox_inches="tight")
+    col_pdf, col_png, _ = st.columns([1, 1, 4])
+    col_pdf.download_button("Download PDF (vector)", pdf.getvalue(), f"{name}.pdf",
+                            mime="application/pdf", on_click="ignore")
+    col_png.download_button("Download PNG (300 dpi)", png.getvalue(), f"{name}.png",
+                            mime="image/png", on_click="ignore")
+
+
+@st.fragment
+def country_tab(responses, raw, metadata, countries) -> None:
+    questions = list_questions(metadata, responses.columns)
+    country_qs = [q for q in questions if q["kind"] == "Country"]
+    if not country_qs:
+        st.error("No country question found in this file.")
+        return
+    options = country_options(questions)
+    by_code = {q["code"]: q for q in options}
+
+    code = _question_picker(
+        "Plot", list(dict.fromkeys(q["category"] for q in options)),
+        lambda t: [q["code"] for q in options if q["category"] == t],
+        lambda c: by_code[c]["title"], "cw_topic", "cw_question",
+    )
+    st.caption("Single-choice and ranking questions. Ranking questions are shown by "
+               "each respondent's highest-ranked (#1) option.")
+
+    col_sort, col_min, col_height = st.columns(3)
+    sort = col_sort.radio("Order of countries", [SORT_BY_SIZE, SORT_ALPHABETICAL],
+                          key="cw_sort", horizontal=True,
+                          help="Country groups are always listed first.")
+    min_n = col_min.slider(
+        "Minimum n per bar", 1, 30, 10, key="cw_min_n",
+        help="Countries and groups with fewer respondents than this are pooled "
+             "into one \"Other countries\" bar.",
+    )
+    height_pct = col_height.slider("Plot height", 50, 200, 100, step=10, format="%d%%",
+                                   key="cw_height")
+
+    # Every country in the uploaded file (not just the filtered responses),
+    # so the group builder's list doesn't change with the sidebar filters.
+    all_countries = sorted(respondent_countries(raw, metadata, countries).dropna().unique())
+    present = set(respondent_countries(responses, metadata, countries).dropna())
+
+    if code is None:
+        st.info("Choose a question to plot.")
+    else:
+        question = by_code[code]
+        st.divider()
+        title = question["title"]
+        heading(title)
+        if question["kind"] == "Ranking":
+            st.markdown(f"**{RANKING_NOTE}**")
+        with st.spinner("Drawing chart..."):
+            item = build_country_item(
+                responses, question, country_qs[0], countries, st.session_state.cw_groups,
+                min_n=min_n, sort=sort, height_scale=height_pct / 100,
+            )
+        if item["type"] == "plot":
+            _download_buttons(item["obj"], f"{code}_by_country")
+        show_item(item, fixed_size=True)
+
+    st.divider()
+    _group_manager(all_countries, present)
+
+
+with tab_country:
+    if responses is None:
+        show_no_data_message()
+    else:
+        country_tab(responses, st.session_state.raw_responses, metadata, countries)
