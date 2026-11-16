@@ -1,10 +1,12 @@
-"""Country-wise figure builder: one question, one 100% bar per country.
+"""Country-wise figure builder: one question, one row per country.
 
-Which questions can be shown:
-    DiscreteExclusive    each respondent's answer
-    Ranking              each respondent's highest-ranked (#1) option
+Which questions can be shown, and how:
+    DiscreteExclusive    100% bar of each country's answers
+    Ranking              100% bar of each respondent's highest-ranked (#1) option
+    Continuous           box plot + dots per country
+    DiscreteInclusive    heatmap: % of each country ticking each option
 
-Each bar is split into the question's answers in the codes-file order, the
+Bars are split into the question's answers in the codes-file order, the
 same order for every bar so countries can be compared directly.
 
 "Units" are what get a bar: a single country, a user-defined country group
@@ -24,7 +26,7 @@ import charts
 from explore import MAX_GROUPS, OTHER, group_colors
 from variables import read_variable
 
-SUPPORTED_KINDS = ("DiscreteExclusive", "Ranking")
+SUPPORTED_KINDS = ("DiscreteExclusive", "Ranking", "Continuous", "DiscreteInclusive")
 RANKING_NOTE = "Ranking question: each respondent counted by their highest-ranked (#1) option."
 SORT_BY_SIZE = "Most respondents first"
 SORT_ALPHABETICAL = "Alphabetical"
@@ -69,7 +71,7 @@ def _build(df, question, country_q, countries, groups, min_n, sort, height_scale
     answers = _answers(var)
     country = read_variable(df, country_q, countries).values
 
-    answered = answers.notna()
+    answered = var.answered if var.kind == "DiscreteInclusive" else answers.notna()
     no_country = int((answered & country.isna()).sum())
     keep = answered & country.notna()
     if not keep.any():
@@ -103,27 +105,54 @@ def _build(df, question, country_q, countries, groups, min_n, sort, height_scale
     # Country groups go at the bottom.
     order = singles + ([pool] if pooled else []) + group_names
 
-    options = [o for o in var.options if (answers == o).any()]
-    coded = [o for o in options if o != OTHER]
-    if len(coded) > MAX_GROUPS:
-        raise ValueError(f"this question has more than {MAX_GROUPS} answers - too many to colour")
-    shares = pd.crosstab(unit, answers, normalize="index").reindex(index=order, columns=options).fillna(0.0)
-
-    colors = group_colors(var.options)
     kinds = ["group" if u in group_names else "pooled" if u == pool else "country" for u in order]
+    sizes = sizes.reindex(order)
 
-    fig = charts.country_stacked_chart(
-        shares, [colors[o] for o in options], kinds, height_scale=height_scale,
-        xlabel=("Share of respondents by their #1-ranked option" if var.kind == "Ranking"
-                else "Share of respondents"),
-    )
+    if var.kind == "Continuous":
+        rows = [(u, answers[unit == u]) for u in order]
+        fig = charts.country_box_chart(rows, kinds, height_scale=height_scale, title=var.title)
+        data = pd.DataFrame({
+            "n": sizes,
+            "Median": [v.median() for _, v in rows],
+            "Q1": [v.quantile(0.25) for _, v in rows],
+            "Q3": [v.quantile(0.75) for _, v in rows],
+            "Min": [v.min() for _, v in rows],
+            "Max": [v.max() for _, v in rows],
+        }, index=order).round(1)
+        how = ("Boxes show the middle half of each country's answers, the red line "
+               "the median; dots are individual respondents.")
+    elif var.kind == "DiscreteInclusive":
+        pct = answers.astype(float).groupby(unit).mean().reindex(index=order, columns=var.options)
+        fig = charts.country_heatmap_chart(pct, kinds, height_scale=height_scale, title=var.title)
+        data = (pct * 100).round(1).map(lambda v: f"{v:.1f}%")
+        data.insert(0, "n", sizes)
+        how = ("Each cell is the % of that country's respondents who ticked the option; "
+               "several options could be ticked, so rows don't add up to 100%. "
+               "Blue = few, red = many, grey = about half.")
+    else:
+        options = [o for o in var.options if (answers == o).any()]
+        coded = [o for o in options if o != OTHER]
+        if len(coded) > MAX_GROUPS:
+            raise ValueError(f"this question has more than {MAX_GROUPS} answers - too many to colour")
+        shares = (pd.crosstab(unit, answers, normalize="index")
+                  .reindex(index=order, columns=options).fillna(0.0))
+        colors = group_colors(var.options)
+        fig = charts.country_stacked_chart(
+            shares, [colors[o] for o in options], kinds, height_scale=height_scale,
+            xlabel=("Share of respondents by their #1-ranked option" if var.kind == "Ranking"
+                    else "Share of respondents"),
+            title=var.title,
+        )
+        data = (shares * 100).round(1).map(lambda v: f"{v:.1f}%")
+        data.insert(0, "n", sizes)
+        how = "Each bar adds up to 100%."
 
     notes = []
     if var.kind == "Ranking":
         notes.append(RANKING_NOTE)
     notes.append(
         f"Based on {int(keep.sum())} respondents who answered this question and "
-        "the country question. Each bar adds up to 100%."
+        f"the country question. {how}"
     )
     if no_country:
         notes.append(f"{no_country} respondent{'s' if no_country > 1 else ''} who didn't give a country "
@@ -131,11 +160,9 @@ def _build(df, question, country_q, countries, groups, min_n, sort, height_scale
     if group_names:
         notes.append("Country groups are shown in bold at the bottom.")
     if pooled:
-        notes.append(f"Pooled into one bar (n < {min_n} each): {', '.join(pooled)}.")
+        notes.append(f"Pooled into one row (n < {min_n} each): {', '.join(pooled)}.")
     notes += var.notes
 
-    data = (shares * 100).round(1).map(lambda v: f"{v:.1f}%")
-    data.insert(0, "n", [sizes[u] for u in order])
     data.index = order  # n is listed in the data table, not on the plot
     data.columns.name = None
     return {

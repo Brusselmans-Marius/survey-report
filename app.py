@@ -9,7 +9,7 @@ itself; see metadata.py for how to update them.
 Three tabs:
 - Full report: one chart/table per question.
 - Explore: one question at a time, optionally grouped by a second question.
-- Country-wise figure builder: one question, one 100% bar per country, with
+- Country-wise figure builder: one question, one 100% bar, box plot or heatmap row per country, with
   user-defined country groups.
 
 Sidebar filters ("Full responses only", "European respondents only") apply
@@ -197,8 +197,11 @@ tab_report, tab_explore, tab_country = st.tabs(
 with tab_report:
     items = st.session_state.reports.get(report_key) if responses is not None else None
     if items:
-        for item in items:
-            heading(item["title"])
+        for i, item in enumerate(items):
+            if i:
+                st.divider()
+            if not item.get("titled"):  # charts carry their title on the figure
+                heading(item["title"])
             show_item(item)
     else:
         show_no_data_message()
@@ -391,8 +394,9 @@ def country_tab(responses, raw, metadata, countries) -> None:
         lambda t: [q["code"] for q in options if q["category"] == t],
         lambda c: by_code[c]["title"], "cw_topic", "cw_question",
     )
-    st.caption("Single-choice and ranking questions. Ranking questions are shown by "
-               "each respondent's highest-ranked (#1) option.")
+    st.caption("Single-choice and ranking questions as 100% bars (ranking by each "
+               "respondent's highest-ranked (#1) option), numbers as box plots, "
+               "tick-all-that-apply questions as a heatmap.")
 
     col_sort, col_min, col_height = st.columns(3)
     sort = col_sort.radio("Order of countries", [SORT_BY_SIZE, SORT_ALPHABETICAL],
@@ -416,8 +420,8 @@ def country_tab(responses, raw, metadata, countries) -> None:
     else:
         question = by_code[code]
         st.divider()
-        title = question["title"]
-        heading(title)
+        # The question title is drawn on the figure itself (so downloads
+        # carry it), not as a page heading.
         if question["kind"] == "Ranking":
             st.markdown(f"**{RANKING_NOTE}**")
         with st.spinner("Drawing chart..."):

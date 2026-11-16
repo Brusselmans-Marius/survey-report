@@ -205,7 +205,7 @@ def _group_legend(fig, ax, labels: list[str], colors: list[str], marker: str = "
                    markerfacecolor=c, markeredgecolor=c)
         for c in colors
     ]
-    fig.legend(
+    return fig.legend(
         handles, labels, loc="lower center", bbox_to_anchor=(0.5, 1.0),
         ncol=ncol, frameon=False, fontsize=9,
         handletextpad=0.3, columnspacing=1.2, labelcolor=INK_PRIMARY,
@@ -355,6 +355,46 @@ def stacked_100_chart(shares: pd.DataFrame, colors: list[str]) -> plt.Figure:
 # ---- Country-wise figure builder -------------------------------------------
 
 COUNTRY_ROW_HEIGHT = 0.36  # inches per bar at height scale 100%
+TITLE_WRAP = 95            # most characters per line of a figure title
+
+
+def _country_row_height(names: list[str], height_scale: float, base: float = COUNTRY_ROW_HEIGHT) -> float:
+    return max(base * height_scale, _max_lines(names) * LINE_HEIGHT + 0.06)
+
+
+def _style_country_labels(ax, kinds: list[str]) -> None:
+    """Country groups in bold, the pooled "Other countries" bar muted italic."""
+    for tick, kind in zip(ax.get_yticklabels(), kinds):
+        if kind == "group":
+            tick.set_fontweight("bold")
+        if kind == "pooled":
+            tick.set_fontstyle("italic")
+            tick.set_color(INK_MUTED)
+        else:
+            tick.set_color(INK_PRIMARY)
+
+
+def add_figure_title(fig, title: str | None, above=None) -> None:
+    """Puts the question title on the figure itself (so downloads carry it),
+    left-aligned with the country labels and above everything else - the
+    legend, if `above` is given."""
+    if not title:
+        return
+    fig.draw_without_rendering()  # settle the layout first (constrained layout moves axes)
+    renderer = fig.canvas.get_renderer()
+    boxes = [ax.get_tightbbox(renderer) for ax in fig.axes]
+    if above is not None:
+        boxes.append(above.get_window_extent(renderer))
+    left_px, right_px = min(b.x0 for b in boxes), max(b.x1 for b in boxes)
+    to_fig = fig.transFigure.inverted()
+    x0, _ = to_fig.transform((left_px, 0))
+    _, y1 = to_fig.transform((0, max(b.y1 for b in boxes)))
+    gap = 0.12 / fig.get_figheight()  # inches -> figure fraction
+    # Wrap to the width the chart takes up (~0.62 em per bold character).
+    width_pt = (right_px - left_px) / fig.dpi * 72
+    chars = max(40, min(TITLE_WRAP, int(width_pt / (11 * 0.62))))
+    fig.text(x0, y1 + gap, wrap(title, chars), ha="left", va="bottom",
+             fontsize=11, fontweight="bold", color=INK_PRIMARY)
 
 
 def country_stacked_chart(
@@ -363,6 +403,7 @@ def country_stacked_chart(
     kinds: list[str],
     height_scale: float = 1.0,
     xlabel: str = "Share of respondents",
+    title: str | None = None,
 ) -> plt.Figure:
     """One 100% bar per country or country group, first row on top.
     shares: index = row labels, columns = answers (same order for every
@@ -373,7 +414,7 @@ def country_stacked_chart(
     answers = list(shares.columns)
     k = len(rows)
     names = [wrap(r) for r in rows]
-    row_h = max(COUNTRY_ROW_HEIGHT * height_scale, _max_lines(names) * LINE_HEIGHT + 0.06)
+    row_h = _country_row_height(names, height_scale)
     fig, ax = plt.subplots(figsize=(7.0, row_h * k + 0.9))
     ys = [k - 1 - j for j in range(k)]
     left = np.zeros(k)
@@ -394,14 +435,118 @@ def country_stacked_chart(
     ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"{v * 100:.0f}%"))
     ax.set_xlabel(xlabel, color=INK_MUTED, fontsize=9)
     _style_axes(ax)
-    for tick, kind in zip(ax.get_yticklabels(), kinds):
-        if kind == "group":
-            tick.set_fontweight("bold")
-        if kind == "pooled":
-            tick.set_fontstyle("italic")
-            tick.set_color(INK_MUTED)
-        else:
-            tick.set_color(INK_PRIMARY)
+    _style_country_labels(ax, kinds)
     fig.tight_layout()
-    _group_legend(fig, ax, answers, colors)
+    legend = _group_legend(fig, ax, answers, colors)
+    add_figure_title(fig, title, above=legend)
+    return fig
+
+
+MEDIAN_RED = "#d03b32"  # median line of the country box plots
+
+
+def country_box_chart(
+    groups: list[tuple[str, pd.Series]],
+    kinds: list[str],
+    height_scale: float = 1.0,
+    title: str | None = None,
+) -> plt.Figure:
+    """One box plot per country or country group (first on top), with every
+    respondent's answer as a dot. One neutral colour: the row label already
+    says which country it is. kinds as in country_stacked_chart."""
+    k = len(groups)
+    names = [wrap(label) for label, _ in groups]
+    row_h = _country_row_height(names, height_scale, base=COUNTRY_ROW_HEIGHT * 1.2)
+    fig, ax = plt.subplots(figsize=(7.0, row_h * k + 0.8))
+    rng = np.random.default_rng(0)  # fixed seed: same jitter on every rerun
+    ys = [k - 1 - j for j in range(k)]
+    for y, (_, vals) in zip(ys, groups):
+        ax.boxplot(
+            vals, positions=[y], vert=False, widths=0.55, patch_artist=True,
+            showfliers=False,
+            boxprops=dict(facecolor=SERIES_1 + "33", edgecolor=SERIES_1_DARK, linewidth=1.2),
+            medianprops=dict(color=MEDIAN_RED, linewidth=2),
+            whiskerprops=dict(color=SERIES_1_DARK, linewidth=1.2),
+            capprops=dict(color=SERIES_1_DARK, linewidth=1.2),
+        )
+        jitter = rng.uniform(-0.15, 0.15, len(vals))
+        ax.scatter(vals, y + jitter, s=22, color=SERIES_1, alpha=0.45, edgecolor="none",
+                   zorder=3)
+    ax.set_yticks(ys)
+    ax.set_yticklabels(names)
+    ax.set_ylim(-0.6, k - 0.4)
+    _style_axes(ax)
+    _style_country_labels(ax, kinds)
+    fig.tight_layout()
+    add_figure_title(fig, title)
+    return fig
+
+
+# Diverging scale for the country heatmap: blue (few respondents ticked the
+# option) -> neutral grey at 50% -> red (most ticked it). Two hues and a
+# neutral midpoint, never a rainbow; red/blue stays distinguishable with
+# the common colour-vision deficiencies.
+HEAT_LOW = "#2f6db5"
+HEAT_MID = "#ecebe6"
+HEAT_HIGH = "#c8423b"
+HEAT_LABEL_WRAP = 26   # characters per line of a column heading
+HEAT_LABEL_MAX = 80    # longer headings are shortened (full text in the data table)
+
+
+def _short(text: str, limit: int = HEAT_LABEL_MAX) -> str:
+    text = str(text)
+    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
+
+
+def country_heatmap_chart(
+    pct: pd.DataFrame,
+    kinds: list[str],
+    height_scale: float = 1.0,
+    title: str | None = None,
+) -> plt.Figure:
+    """Heatmap for tick-all-that-apply questions: one row per country or
+    group (first on top), one column per option; each cell is the share
+    (0-1) of that row's respondents who ticked the option, printed in the
+    cell and coloured on a blue-grey-red scale centred on 50%."""
+    from matplotlib.colors import LinearSegmentedColormap
+
+    cmap = LinearSegmentedColormap.from_list("heat", [HEAT_LOW, HEAT_MID, HEAT_HIGH])
+    rows, cols = list(pct.index), list(pct.columns)
+    k, n_opt = len(rows), len(cols)
+    names = [wrap(r) for r in rows]
+    row_h = _country_row_height(names, height_scale)
+    many = n_opt > 5  # many columns: steeper, wider headings and a wider figure
+    fig, ax = plt.subplots(figsize=(max(7.0, 2.2 + 0.68 * n_opt), row_h * k + 2.0))
+    values = pct.to_numpy(dtype=float)
+    ax.pcolormesh(values, cmap=cmap, vmin=0, vmax=1, edgecolors=SURFACE, linewidth=2)
+    if row_h >= 0.22:
+        for i in range(k):
+            for j in range(n_opt):
+                v = values[i, j]
+                ax.text(j + 0.5, i + 0.5, f"{v * 100:.0f}%", ha="center", va="center", fontsize=8,
+                        color="white" if abs(v - 0.5) > 0.3 else INK_PRIMARY)
+    ax.invert_yaxis()  # first row on top
+    ax.set_yticks([i + 0.5 for i in range(k)])
+    ax.set_yticklabels(names)
+    ax.xaxis.tick_top()
+    ax.set_xticks([j + 0.5 for j in range(n_opt)])
+    ax.set_xticklabels([wrap(_short(c), HEAT_LABEL_WRAP + (12 if many else 0)) for c in cols],
+                       rotation=60 if many else 35, ha="left", rotation_mode="anchor",
+                       fontsize=8.5, color=INK_PRIMARY)
+    ax.tick_params(length=0, colors=INK_MUTED)
+    for spine in ax.spines.values():
+        spine.set_visible(False)
+    _style_country_labels(ax, kinds)
+    for tick in ax.get_xticklabels():
+        tick.set_color(INK_PRIMARY)
+
+    bar = fig.colorbar(
+        plt.cm.ScalarMappable(cmap=cmap, norm=plt.Normalize(0, 1)), ax=ax,
+        orientation="horizontal", location="bottom", fraction=0.04, pad=0.03, aspect=40,
+    )
+    bar.outline.set_visible(False)
+    bar.ax.tick_params(length=0, colors=INK_MUTED, labelsize=8)
+    bar.ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"{v * 100:.0f}%"))
+    bar.set_label("Share of respondents who ticked the option", color=INK_MUTED, fontsize=9)
+    add_figure_title(fig, title)
     return fig
