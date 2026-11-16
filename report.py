@@ -120,6 +120,10 @@ def build_question_item(df: pd.DataFrame, question: dict, countries: pd.DataFram
         var = read_variable(df, question, countries)
         item = _BUILDERS[question["kind"]](var)
         item["title"] = question["title"]
+        if item["type"] == "plot":
+            # The title goes on the figure itself, not above it on the page.
+            charts.add_figure_title(item["obj"], question["title"])
+            item["titled"] = True
         item["other_texts"] = var.other_texts
         if var.notes:
             item["caption"] = " ".join(var.notes)
