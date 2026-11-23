@@ -88,10 +88,12 @@ def discrete_exclusive_chart(labels: pd.Series, ordered_labels: list[str]) -> pl
 
     fig, ax = plt.subplots(figsize=(6.5, _row_height(names) * len(counts) + 1.2))
     ax.barh(names, counts.values, color=SERIES_1, edgecolor=INK_PRIMARY, linewidth=0.8)
+    total = len(labels)  # everyone who answered: the percentages add up to 100
     pad = max(counts.values) * 0.02
     for y, v in enumerate(counts.values):
-        ax.text(v + pad, y, str(int(v)), va="center", ha="left", color=INK_PRIMARY, fontsize=9)
-    ax.set_xlim(0, max(counts.values) * 1.12)
+        ax.text(v + pad, y, f"{int(v)} ({v / total * 100:.0f}%)", va="center", ha="left",
+                color=INK_PRIMARY, fontsize=9)
+    ax.set_xlim(0, max(counts.values) * 1.22)
     _style_axes(ax)
     fig.tight_layout()
     return fig
